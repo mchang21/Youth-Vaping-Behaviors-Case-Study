@@ -1,0 +1,1009 @@
+---
+title: "CS03 - Vaping Behaviors in American Youth"
+author: "Adrian Castaneda, Garvin Mo Zhen, Melvin Chang"
+output: html_document
+---
+
+### Load packages
+
+```{r load-packages, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(broom)
+library(OCSdata)
+library(viridis) 
+library(scales)
+library(srvyr)
+```
+
+## Introduction
+
+In this case study, we seek to analyze tobacco and e-cigarette trends and usage among middle school and high school students (grades 6-12) in the United States. It is without question that the use of tobacco is directly correlated with diseases which may lead to death. It has been known that tobacco is the leading cause of preventable disease and death in the United States (Slide 5, CS03 (Data)). Seeing as how tobacco product usage begins early--during youth and young adulthood--we want to exactly see notable trends in order to minimize tobacco usage in young adults. However, despite declines in tobacco usage, the rise of e-cigarette usage has caused an increase in tobacco product usage among middle school and high school students (Slide 5, CS03 (Data)). Despite not being actual cigarettes, these young adults should still be wary of the health effects associated with e-cigarettes. This includes volatile organic compounds, cancer-causing chemicals, nicotine, ultrafine particles, heavy metals, and flavoring chemicals which are linked to serious lung disease (Slide 6, CS03 (Data)). E-cigarettes are still capable of causing serious lung damage and injury. Analyzing what trends exist for tobacco and e-cigarette usage among middle school and high school students may help to prevent the rising trend of e-cigarette usage and further prevent deadly diseases and lung damage.
+
+## Question
+
+1) How has tobacco and e-cigarette/vaping use by American youths changed since 2015?    
+2) How does e-cigarette use compare between males and females?    
+3) What vaping brands and flavors appear to be used the most frequently?       
+4) Is there a relationship between e-cigarette/vaping use and other tobacco use?     
+5) How does class level in school change the answer to the above questions?
+
+## The Data
+
+The data we will be using for this case study comes from the National Youth Tobacco Survey (NYTS).
+The data is an annual survey which asks middle school and high school (grades 6-12) about their tobacco usage in the United States.
+The data we will be using is from 2015 to 2019.
+
+### Data Import
+
+To begin to answer our questions, we imported our data.
+```{r, eval=FALSE}
+# OCSdata::load_simpler_import("ocs-bp-vaping-case-study", outpath = getwd())
+```
+
+### Data Wrangling
+
+The raw data is not exactly in the form we want it, so we begin wrangling the data by reading the csv files into a tibble and assigning appropriate names.
+```{r, message=FALSE}
+# read CSVs
+nyts_data <- list.files("data/simpler_import/", 
+                        pattern = "*.csv", 
+                        full.names = TRUE) |>
+  map(~ read_csv(.))
+# read names from data
+nyts_data_names <- list.files("data/simpler_import/",
+                              pattern = "*.csv") |>
+  str_extract("nyts201[5-9]")
+# apply names to tibble/data set
+names(nyts_data) <- nyts_data_names
+```
+
+There are currently vague column names for the data, so we need to rename each column to be more descriptive. We began with the 2015 data.
+```{r}
+nyts_data[["nyts2015"]] <- nyts_data[["nyts2015"]] |>
+  # Rename columns for Age, Sex, and Grade
+  rename(Age = Qn1,
+         Sex = Qn2,
+         Grade = Qn3)
+```
+
+For the 2016-2018 data, we created a function to rename the columns for us since they all contain similar column names.
+```{r}
+update_survey <- function(dataset) { 
+  dataset |>
+    # Rename the following columns to be more descriptive
+    rename(Age = Q1,
+           Sex = Q2,
+           Grade = Q3,
+           menthol = Q50A,
+           clove_spice = Q50B,
+           fruit = Q50C,
+           chocolate = Q50D,
+           alcoholic_drink = Q50E,
+           candy_dessert_sweets = Q50F,
+           other = Q50G)
+}
+```
+
+Now that we have our function, we can apply it to our 2016-2018 data to rename corresponding columns.
+```{r}
+nyts_data <- nyts_data |> 
+  map_at(vars(-nyts2015, -nyts2019), update_survey)
+```
+
+The 2019 data is a bit different from the 2015-2018 data, so we need to clean up the column names in a slightly different way but are accomplishing a similar outcome.
+```{r}
+nyts_data[["nyts2019"]] <- nyts_data[["nyts2019"]] |>
+  rename(brand_ecig = Q40,
+         Age = Q1,
+         Sex = Q2,
+         Grade = Q3,
+         menthol = Q62A,
+         clove_spice = Q62B,
+         fruit = Q62C,
+         chocolate = Q62D,
+         alcoholic_drink = Q62E,
+         candy_dessert_sweets = Q62F,
+         other = Q62G)
+```
+
+Now the names of our columns are more descriptive to what they represent.
+```{r}
+map(nyts_data, names)
+```
+
+Knowing that in the raw data an age value of 1 corresponds to 9 years old and a grade value of 1 corresponds to 6th grade, we made adjustments to the values so 1 = 1, 2 = 2, across the columns in the data set. We also made values more descriptive by converting to male/female values for sex, identifying NAs, converting appropriate values to true/false, and better categorizing ages >18 and grades not 1-12.
+```{r, warning=FALSE}
+update_values <- function(dataset){
+  dataset |>
+    mutate(Age = as.numeric(Age) + 8, # Add 8 to the age so 9 = 9 years old
+           Grade = as.numeric(Grade) + 5) |> # Add 5 to the grade so 6 = 6th grade
+    # Convert everything to factors
+    mutate(Age = as.factor(Age),
+           Grade = as.factor(Grade),
+           Sex = as.factor(Sex)) |>
+    # Convert 1 and 2s to male and females
+    mutate(Sex = recode(Sex,
+                        `1` = "male",
+                        `2` = "female")) |>
+    mutate_all(~ replace(., . %in% c("*", "**"), NA)) |> # Identify and assign NA values
+    mutate(Age = recode(Age, `19` = ">18"), # Change 19 to >=18 for age
+           Grade = recode(Grade,
+                          `13` = "Ungraded/Other")) |> # Convert 13 to ungraded/other to better describe people not in 1-12th grade
+    # Convert data values to logical instead of 1 and 2s
+    mutate_at(vars(starts_with("E", ignore.case = FALSE),
+                   starts_with("C", ignore.case = FALSE)
+    ), list( ~ recode(., `1` = TRUE,
+                      `2` = FALSE,
+                      .default = NA,
+                      .missing = NA)))
+}
+```
+
+Apply our function to the data.
+```{r, warning=FALSE}
+nyts_data <- map(nyts_data, update_values)
+```
+
+For the flavor data in 2016-2019, we decided to convert missing values to FALSE since we only care about the observation that say TRUE. We did this by creating a function and applying it to the four years of data.
+```{r}
+update_flavors <- function(dataset){
+  dataset |>
+    mutate_at(vars(menthol:other),
+              list(~ recode(.,
+                            `1` = TRUE,
+                            .default = FALSE,
+                            .missing = FALSE))) }
+nyts_data  <- nyts_data  |> 
+  map_at(vars(-nyts2015), update_flavors)
+```
+
+For the 2019 data, we have numbers corresponding to e-cigarrete brands, which we reassigned to a string of the e-cigarrete brand to make the data easier to interpret. We also reassigned all values corresponding to missing values to NA.
+```{r}
+nyts_data[["nyts2019"]] <- nyts_data[["nyts2019"]] |>
+  mutate_all(~ replace(., . %in% c(".N", ".S", ".Z"), NA)) |> # Assign missing values to NA
+  mutate(psu = as.character(psu)) |> # Convert to characters
+  # Replace value with corresponding brand name.
+  mutate(brand_ecig = recode(brand_ecig,
+                             `1` = "Other", # levels 1,8 combined to `Other`
+                             `2` = "Blu",
+                             `3` = "JUUL",
+                             `4` = "Logic",
+                             `5` = "MarkTen",
+                             `6` = "NJOY",
+                             `7` = "Vuse",
+                             `8` = "Other"))
+```
+
+Now that we have most of our data cleaned, we combined each year of data all into one data set.
+```{r}
+nyts_data <- nyts_data |>
+  map_df(bind_rows, .id = "year") |> 
+  mutate(year = as.numeric(str_remove(year, "nyts"))) # remove "nyts" from year column
+```
+
+We have several columns on whether an individual has used a certain form of tobacco. To determine whether an individual has used any type of tobacco, we summed all the TRUEs in our data for tobacco and if that sum is greater than 0 then we know that person has used tobacco. We did this to determine if someone has ever used tobacco and if someone is currently using tobacco.
+```{r}
+nyts_data <- nyts_data %>%
+  # Sum all TRUEs for ever and current
+  mutate(tobacco_sum_ever = rowSums(select(., starts_with("E", 
+                                    ignore.case = FALSE)), na.rm = TRUE),
+         tobacco_sum_current = rowSums(select(., starts_with("C", 
+                                    ignore.case = FALSE)), na.rm = TRUE))  |>
+  # if that sum is greater than 0 assign TRUE, if not then FALSE
+  mutate(tobacco_ever = case_when(tobacco_sum_ever > 0 ~ TRUE,
+                                  tobacco_sum_ever == 0 ~ FALSE),
+         tobacco_current = case_when(tobacco_sum_current > 0 ~ TRUE,
+                                     tobacco_sum_current == 0 ~ FALSE))
+```
+
+Similar to what we did with tobacco, we used a similar method to determine if someone has used e-cigarretes and non e-cigarretes ever or currently.
+```{r}
+nyts_data <- nyts_data %>% 
+  # Sum all TRUEs for ever and current for e-cigs and non e-cigs
+  mutate(ecig_sum_ever = rowSums(select(., EELCIGT), na.rm = TRUE),
+         ecig_sum_current = rowSums(select(., CELCIGT), na.rm = TRUE),
+         non_ecig_sum_ever = rowSums(select(., starts_with("E",  ignore.case = FALSE), 
+                                            -EELCIGT), na.rm = TRUE),
+         non_ecig_sum_current = rowSums(select(., starts_with("C", ignore.case = FALSE), 
+                                               -CELCIGT), na.rm = TRUE)) |>
+  # if that sum is greater than 0 assign TRUE, if not then FALSE
+  mutate(ecig_ever = case_when(ecig_sum_ever > 0 ~ TRUE,
+                              ecig_sum_ever == 0 ~ FALSE),
+         ecig_current = case_when(ecig_sum_current > 0 ~ TRUE,
+                                  ecig_sum_current == 0 ~ FALSE),
+         non_ecig_ever = case_when(non_ecig_sum_ever > 0 ~ TRUE,
+                                   non_ecig_sum_ever == 0 ~ FALSE),
+         non_ecig_current = case_when(non_ecig_sum_current > 0 ~ TRUE,
+                                      non_ecig_sum_current == 0 ~ FALSE))
+```
+
+Furthermore, we grouped everyone into only e-cigarette users, only non e-cigarette users, neither, or combination of products.
+```{r}
+# Determine if someone has only used e-cigs, only non e-cigs, neither, or both
+nyts_data <- nyts_data |>
+             mutate(ecig_only_ever = case_when(ecig_ever == TRUE &
+                                           non_ecig_ever == FALSE &
+                                            ecig_current == FALSE &
+                                        non_ecig_current == FALSE ~ TRUE,
+                                                             TRUE ~ FALSE),
+              ecig_only_current = case_when(ecig_current == TRUE &
+                                           non_ecig_ever == FALSE &
+                                        non_ecig_current == FALSE ~ TRUE,
+                                                            TRUE ~ FALSE),
+            non_ecig_only_ever = case_when(non_ecig_ever == TRUE &
+                                               ecig_ever == FALSE &
+                                            ecig_current == FALSE &
+                                        non_ecig_current == FALSE ~ TRUE,
+                                                            TRUE ~ FALSE),
+      non_ecig_only_current = case_when(non_ecig_current == TRUE &
+                                               ecig_ever == FALSE &
+                                            ecig_current == FALSE ~ TRUE,
+                                                            TRUE ~ FALSE),
+                        no_use = case_when(non_ecig_ever == FALSE &
+                                               ecig_ever == FALSE &
+                                            ecig_current == FALSE &
+                                        non_ecig_current == FALSE ~ TRUE,
+                                                            TRUE ~ FALSE)) %>%
+                 mutate(Group = case_when(ecig_only_ever == TRUE |
+                                       ecig_only_current == TRUE ~ "Only e-cigarettes",
+                                      non_ecig_only_ever == TRUE |
+                                   non_ecig_only_current == TRUE ~ "Only other products",
+                                                  no_use == TRUE ~ "Neither",
+                                          ecig_only_ever == FALSE &
+                                       ecig_only_current == FALSE &
+                                      non_ecig_only_ever == FALSE &
+                                   non_ecig_only_current == FALSE &
+                                                  no_use == FALSE ~ "Combination of products"))
+```
+
+
+To extend our analysis, we wanted to analyze differences in students in different class levels o we added a column to specify their class level.
+```{r}
+nyts_data <- nyts_data |>
+  mutate(level = case_when(Grade == 6 ~ "Middle School",
+                           Grade == 7 ~ "Middle School",
+                           Grade == 8 ~ "Middle School",
+                           Grade == 9 ~ "High School",
+                           Grade == 10 ~ "High School",
+                           Grade == 11 ~ "High School",
+                           Grade == 12 ~ "High School",
+                           Grade == "Ungraded/Other" ~ "Ungraded/Other"))
+```
+
+We added a count for total of number of students each year.
+```{r}
+nyts_data <- nyts_data |> 
+  add_count(year)
+```
+
+Finally, we can save our data.
+```{r}
+save(nyts_data, file="data/wrangled/wrangled_data_vaping.rda")
+```
+
+And we have our wrangled data set.
+```{r}
+nyts_data
+```
+
+## Analysis
+
+### Exploratory Data Analysis
+
+To begin answering how tobacco and e-cigarette usage has changed since 2015, we can examine trends for both tobacco and e-cigarettes individually.
+
+```{r, message=FALSE}
+nyts_data |>
+  group_by(year) |>
+  summarize("Ever \n (any lifetime use)" = (mean(tobacco_ever, na.rm = TRUE) * 100),
+            "Current \n (any past-30-day use)" = (mean(tobacco_current, na.rm = TRUE) * 100)) |>
+  pivot_longer(cols = -year, names_to = "User", values_to = "Percentage of students") |>
+  ggplot(aes(x = year, y = `Percentage of students`)) +
+  geom_line(aes(linetype = User)) +
+  geom_point(show.legend = FALSE, size = 2) +
+  # this allows us to choose what type of line we want for each line
+  scale_linetype_manual(values = c(1, 2), 
+                        breaks = c("Ever \n (any lifetime use)", 
+                                   "Current \n (any past-30-day use)")) +
+  # this allows us to specify how the y-axis should appear
+  scale_y_continuous(breaks = seq(0, 70, by = 10),
+                     labels = seq(0, 70, by = 10),
+                     limits = c(0, 70)) +
+  # this adjusts the background style of the plot
+  theme_linedraw() +
+  labs(title = "How has tobacco use varied over the years?",
+       y = "% of students") + 
+  # this moves the legend to the bottom of the plot and removes the x axis title
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(), 
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+```
+
+As we can see from the graph, tobacco use was on a decline from 2015 to 2017, and since 2017, tobacco usage has been slowly increasing. In 2015, tobacco usage among students within their lifetime makes up approximately 36% of students. This decreases as low as approximately 31% in 2017. This percentage has slowly been increasing with approximately 40% of students having used tobacco in their lifetime in 2019.
+
+Students who have used tobacco recently (any over the past 30 days) have followed a similar trend. The percentage of students who currently use tobacco is approximately 19% in 2015, which slowly declines to approximately 15% of students in 2016 and 2017. Since 2017, this number has increased to approximately 23% in 2019.
+
+Next, we will examine trends for e-cigarette usage since 2015.
+
+```{r}
+nyts_data |>
+  group_by(year) |>
+  summarize("Ever \n (any lifetime use)" = (mean(ecig_ever, na.rm = TRUE) * 100),
+            "Current \n (any past-30-day use)" = (mean(ecig_current, na.rm = TRUE) * 100)) |>
+  pivot_longer(cols = -year, names_to = "User", values_to = "Percentage of students") |>
+  ggplot(aes(x = year, y = `Percentage of students`)) +
+  geom_line(aes(linetype = User)) +
+  geom_point(show.legend = FALSE, size = 2) +
+  # this allows us to choose what type of line we want for each line
+  scale_linetype_manual(values = c(1, 2), 
+                        breaks = c("Ever \n (any lifetime use)", 
+                                   "Current \n (any past-30-day use)")) +
+  # this allows us to specify how the y-axis should appear
+  scale_y_continuous(breaks = seq(0, 60, by = 10),
+                     labels = seq(0, 60, by = 10),
+                     limits = c(0, 60)) +
+  # this adjusts the background style of the plot
+  theme_linedraw() +
+  labs(title = "How has e-cigarette use varied over the years?",
+       y = "% of students") +
+  # this moves the legend to the bottom of the plot and removes the x axis title
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+```
+
+We can see from the graph that e-cigarette usage shares a similar trend to that of tobacco usage. In 2015, about 26% of students have used e-cigarettes in their lifetime which slowly decreases to 21% in 2017. Since 2017, this percentage has risen to about 34% of students.
+
+For students who have used e-cigarettes over the past 30 days, we see this this makes up about 11% of students in 2015. This percentage declines to about 7% of students in 2016 and 2017, which then significantly increases to about 19% of students by 2019.
+
+
+In our third graph, we can examine what percentage of students have not used any of these products, which have used both, which have used only e-cigarettes, and which have used only other products.
+
+```{r}
+v_colors =  viridis(5)[1:4]  #specify color palatte
+nyts_data |>
+  group_by(Group, year, n) |>
+  summarize(group_count = n()) |>
+  mutate("Percentage of students" = group_count / n * 100) |>
+  ggplot(aes(x = year, y = `Percentage of students`, color = Group)) +
+  geom_point(size = 2) +
+  geom_line() +
+  scale_color_manual(breaks = c("Neither", "Combination of products",
+                                "Only e-cigarettes", "Only other products"),
+                     values = v_colors) +
+  theme_linedraw() +
+  labs(x = "Year") +
+  theme(text = element_text(size = 15),
+        plot.title.position = "plot")
+
+```
+
+From this graph, we can see that a majority of students (over 60%) have used neither products each year since 2015. We also notice that the percentage of students who use a combination of products share a similar trend as the above two graphs where the percentage of students declines from 2015 to 2017 which then begins to increase from 2017 to 2019. Additionally, we can see that the percentage of students who only use e-cigarettes have remained about the same until 2017 at about 5% of students which then increases significantly by about 11% by 2019. Lastly, we can see that the percentage of students who only use other products have been on the decline decreasing from about 11% of students to about 5% of students by 2019.
+
+From examining these graphs, we notice how e-cigarettes have grown in popularity compared to tobacco usage. Although a larger percentage of students use both tobacco and e-cigarette products, it would be no surprise if students would begin to make this switch to solely use e-cigarettes given these trends.
+
+After exploring the significant differences between tobacco and e-cigarette use within the past years. We will continue to explore whether sex would make a difference in tobacco and e-cigarette use. First we will plot e-cigarette use between Sex.
+```{r, message=FALSE}
+#question 2
+v_colors =  v_colors =  c("#00c4aa", "#8700f9") #getting desired colors 
+
+nyts_data |>
+  filter(!is.na(Sex)) |> # getting all rows that have inputs in the Sex column
+  group_by(year, Sex) |> # combine rows that have the same year and Sex
+  # Gettign the percentage of current/ever students that have used e-cigarretes
+  summarize("Ever \n (any lifetime use)" = (mean(EELCIGT, na.rm = TRUE) * 100),
+            "Current \n (any past-30-day use)" = (mean(CELCIGT, na.rm = TRUE) * 100)) |>
+  pivot_longer(cols = "Ever \n (any lifetime use)":"Current \n (any past-30-day use)",
+               names_to = "User",
+               values_to = "Percentage of students") |>
+  # plotting percent of students that use e-cigarettes separated by Sex
+  ggplot(aes(x = year, y = `Percentage of students`, color = Sex)) +
+  geom_line(aes(linetype = User)) + # setting the type of line for each category
+  geom_point(show.legend = FALSE, size = 2) +
+  scale_linetype_manual(values = c(2, 1)) + 
+  scale_color_manual(values = v_colors) + # setting the colors
+  theme_linedraw() +
+  # setting title and axis
+  labs(title = "How does e-cigarette usage compare between males and females?",
+       subtitle = "Current and ever users by sex",
+       y = "% of students") +
+  # adding legend
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+```
+
+We can see that from the years 2015-2017 there was a small decline in current and ever e-cigarette users. However, after the year 2017, e-cigarette usage began to pick up reaching to over 30% usage in both male and female students in terms of any lifetime use. Overall, there is an obvious trend that a larger percentage of male students use e-cigarettes in comparison to female students.
+
+Now we will plot the differences in tobacco usage in Sex.
+```{r, message=FALSE}
+nyts_data |>
+  filter(!is.na(Sex)) |> # getting all rows that have inputs in the Sex column
+  group_by(year, Sex) |> # combine rows that have the same year and Sex
+  # Gettign the percentage of current/ever students that have used e-cigarretes
+  summarize("Ever \n (any lifetime use)" = (mean(ECIGT, na.rm = TRUE) * 100),
+            "Current \n (any past-30-day use)" = (mean(CCIGT, na.rm = TRUE) * 100)) |>
+  pivot_longer(cols = "Ever \n (any lifetime use)":"Current \n (any past-30-day use)",
+               names_to = "User",
+               values_to = "Percentage of students") |>
+  # plotting percent of students that use e-cigarettes separated by Sex
+  ggplot(aes(x = year, y = `Percentage of students`, color = Sex)) +
+  geom_line(aes(linetype = User)) + # setting the type of line for each category
+  geom_point(show.legend = FALSE, size = 2) +
+  scale_linetype_manual(values = c(2, 1)) + 
+  scale_color_manual(values = v_colors) + # setting the colors
+  theme_linedraw() +
+  # setting title and axis
+  labs(title = "How does tobacco usage compare between males and females?",
+       subtitle = "Current and ever users by sex",
+       y = "% of students") +
+  # adding legend
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+
+```
+
+Relative to e-cigarette usage, tobacco is less popular and is on a steady decline, we can see this trend in both sexes (males and females). On the other hand, a larger percentage of male students tend to use both tobacco and e-cigarettes more than female students.
+
+To continue visualizing the key differences in male and female students, we will also create a function to plot for specific grade level, in other words, the differences in middle school and high school students.
+```{r}
+#function to plot each of the Sex by level
+plot_level <- function(lvl) {
+  nyts_data |>
+  filter(!is.na(Sex)) |> # getting all rows that have inputs in the Sex column
+  filter(level == lvl) |>
+  group_by(year, Sex) |> # combine rows that have the same year and Sex
+  # Gettign the percentage of current/ever students that have used e-cigarretes
+  summarize("Ever \n (any lifetime use)" = (mean(EELCIGT, na.rm = TRUE) * 100),
+            "Current \n (any past-30-day use)" = (mean(CELCIGT, na.rm = TRUE) * 100)) |>
+  pivot_longer(cols = "Ever \n (any lifetime use)":"Current \n (any past-30-day use)",
+               names_to = "User",
+               values_to = "Percentage of students") |>
+  # plotting percent of students that use tobacco separated by Sex
+  ggplot(aes(x = year, y = `Percentage of students`, color = Sex)) +
+  geom_line(aes(linetype = User)) + # setting the type of line for each category
+  geom_point(show.legend = FALSE, size = 2) +
+  scale_linetype_manual(values = c(2, 1)) + 
+  scale_color_manual(values = v_colors) + # setting the colors
+  theme_linedraw() +
+  # setting title and axis
+  labs(title = "How does e-cigarette usage compare between males and females?",
+       subtitle = paste("Current and ever users by sex in", lvl, sep=" "),
+       y = "% of students") +
+  # adding legend
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+}
+```
+
+To add on to the previous plot, we will also check whether there significant differences in the grade level that the students are in that would indicate e-cigarette use. We will look at e-cigarette use specifically since it become a trend amongst students.
+```{r, message=FALSE}
+plot_level("Middle School")
+plot_level("High School")
+```
+
+Among middle school students, within the past 30 days, we can see that the gap between male and female students was almost close to none. We can also visualize that in lifetime use, high school students double the usage compared to middle school students. Overall, the trend continues where a larger portion of male students use e-cigarettes compared to female students in both middle school and high school.
+
+To begin to explore what vaping brands and flavors appear to be used the most frequently, we plotted percent of e-cigarette users by brand.
+```{r}
+nyts_data |>
+  filter(year == 2019) |> # Filter to 2019 data
+  group_by(brand_ecig) |> # Group by brand
+  filter(!is.na(brand_ecig)) |> # Remove NA
+  summarize(n = n()) |> # Count number of observation in a brand
+  # Convert count to a percentage
+  mutate(total = sum(n),
+         Percent = n * 100 / total) |>
+  mutate(brand_ecig = fct_reorder(brand_ecig, desc(Percent))) |> # Reorder
+  # Plot % of e-cigarrete users by brand
+  ggplot(aes(x = brand_ecig, y = Percent, fill = brand_ecig)) +
+  geom_bar(stat = "identity", color = "black") +
+  theme_linedraw() +
+  # Set labels
+  labs(title = "What vaping brands appear to be used the most frequently?",
+       subtitle = "Brand of e-cigarette most frequently used in the last 30 days (2019)",
+       y = "% of e-cigarette users responding") +
+  # Set theme
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+```
+
+From this chart we see that JUUL by far is the most popular brand in our data set with over 50% of e-cigarrete users choosing JUUL. The next most popular brand, Blu, sits at less than 5%. The other category is fairly large at around 35% further indicating that no other brand is popular besides JUUL.
+
+Since our data set span multiple levels of schooling, we wanted to see if the most popular e-cigarette brands changed with class level.
+```{r}
+Middle_School = nyts_data |>
+  filter(year == 2019, level == "Middle School") |> # Filter to 2019 data and middle schoolers
+  group_by(brand_ecig) |> # Group by brand
+  filter(!is.na(brand_ecig)) |> # Remove NA
+  summarize(n = n()) |> # Count number of observation in a brand
+  # Convert count to a percentage
+  mutate(total = sum(n),
+         Percent = n * 100 / total) |>
+  mutate(brand_ecig = fct_reorder(brand_ecig, desc(Percent))) |> # Reorder
+  # Plot % of e-cigarrete users by brand
+  ggplot(aes(x = brand_ecig, y = Percent, fill = brand_ecig)) +
+  geom_bar(stat = "identity", color = "black") +
+  theme_linedraw() +
+  # Set labels
+  labs(title = "What vaping brands appear to be used the most frequently by Middle School Students?",
+       subtitle = "Brand of e-cigarette most frequently used in the last 30 days (2019)",
+       y = "% of e-cigarette users responding") +
+  # Set theme
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+
+High_School = nyts_data |>
+  filter(year == 2019, level == "High School") |> # Filter to 2019 data and high schoolers
+  group_by(brand_ecig) |> # Group by brand
+  filter(!is.na(brand_ecig)) |> # Remove NA
+  summarize(n = n()) |> # Count number of observation in a brand
+  # Convert count to a percentage
+  mutate(total = sum(n),
+         Percent = n * 100 / total) |>
+  mutate(brand_ecig = fct_reorder(brand_ecig, desc(Percent))) |> # Reorder
+  # Plot % of e-cigarrete users by brand
+  ggplot(aes(x = brand_ecig, y = Percent, fill = brand_ecig)) +
+  geom_bar(stat = "identity", color = "black") +
+  theme_linedraw() +
+  # Set labels
+  labs(title = "What vaping brands appear to be used the most frequently by High School Students?",
+       subtitle = "Brand of e-cigarette most frequently used in the last 30 days (2019)",
+       y = "% of e-cigarette users responding") +
+  # Set theme
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+```
+
+```{r}
+Middle_School
+High_School
+```
+
+In this case, there seems to be minor differences in cigarette brand popularity between middle and high school students. High school students prefer JUUL slightly more and middle school students prefer Vuse slightly more than Blu. All changes are minor nonetheless but there are slight differences.
+
+Although e-cigarettes are marketed as a better alternative to cigarettes, we wanted to see if there is a relationship between e-cigarette and cigarette use.
+```{r}
+# Set desired colors
+v_colors =  viridis(6)[c(1, 4)]
+nyts_data |>
+  group_by(year) |> # Group data by year
+  # Determine what percent of students have ever and currently use tobacco and e-cigarettes
+  summarize(
+    "Cigarettes, Ever \n (any lifetime use)" = (mean(ECIGT, na.rm = TRUE) * 100),
+    "E-cigarettes, Ever \n (any lifetime use)" = (mean(EELCIGT, na.rm = TRUE) * 100),
+    "Cigarettes, Current \n (any past-30-day use)" = (mean(CCIGT, na.rm = TRUE) * 100),
+    "E-cigarettes, Current \n (any past-30-day use)" = (mean(CELCIGT, na.rm = TRUE) * 100)
+  ) |>
+  pivot_longer(cols = -year,
+               names_to = "Category",
+               values_to = "Percentage of students") |>
+  separate(Category, into = c("Product", "User"), sep = ", ") |>
+  # Plot percent of students by current and ever use of tobacco and e-cigarettes
+  ggplot(aes(
+    x = year,
+    y = `Percentage of students`,
+    color = Product,
+    linetype = User
+  )) +
+  geom_line() +
+  geom_point(show.legend = FALSE, size = 2) +
+  # Set colors
+  scale_linetype_manual(values = c(2, 1)) +
+  scale_color_manual(values = v_colors) +
+  theme_linedraw() +
+  # Set labels
+  labs(title = "How does e-cigarette use compare to cigarette use?",
+       subtitle = "Current and ever users of e-cigarettes and cigarettes",
+       y = "% of students") +
+  # Set theme
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+```
+
+There seems to be a relationship between e-cigarettes and cigarettes in 2015-2017 with both following a similar trend but starting in 2018, e-cigarettes increased in popularity at a much faster rate compares to other years while cigarette use declines slightly.
+
+Knowing the trends across the total population of observations, we wanted to see how e-cigarette and cigarette use trended between class levels.
+```{r}
+# Set desired colors
+v_colors =  viridis(6)[c(1, 4)]
+Middle_School = nyts_data |>
+  filter(level == "Middle School") |> # Filter for middle schoolers
+  group_by(year) |> # Group data by year
+  # Determine what percent of students have ever and currently use tobacco and e-cigarettes
+  summarize(
+    "Cigarettes, Ever \n (any lifetime use)" = (mean(ECIGT, na.rm = TRUE) * 100),
+    "E-cigarettes, Ever \n (any lifetime use)" = (mean(EELCIGT, na.rm = TRUE) * 100),
+    "Cigarettes, Current \n (any past-30-day use)" = (mean(CCIGT, na.rm = TRUE) * 100),
+    "E-cigarettes, Current \n (any past-30-day use)" = (mean(CELCIGT, na.rm = TRUE) * 100)
+  ) |>
+  pivot_longer(cols = -year,
+               names_to = "Category",
+               values_to = "Percentage of students") |>
+  separate(Category, into = c("Product", "User"), sep = ", ") |>
+  # Plot percent of students by current and ever use of tobacco and e-cigarettes
+  ggplot(aes(
+    x = year,
+    y = `Percentage of students`,
+    color = Product,
+    linetype = User
+  )) +
+  geom_line() +
+  geom_point(show.legend = FALSE, size = 2) +
+  # Set colors
+  scale_linetype_manual(values = c(2, 1)) +
+  scale_color_manual(values = v_colors) +
+  theme_linedraw() +
+  # Set labels
+  labs(title = "How does e-cigarette use compare to cigarette use for middle school students?",
+       subtitle = "Current and ever users of e-cigarettes and cigarettes",
+       y = "% of students") +
+  # Set theme
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+
+High_School = nyts_data |>
+  filter(level == "High School") |> # Filter for high schoolers
+  group_by(year) |> # Group data by year
+  # Determine what percent of students have ever and currently use tobacco and e-cigarettes
+  summarize(
+    "Cigarettes, Ever \n (any lifetime use)" = (mean(ECIGT, na.rm = TRUE) * 100),
+    "E-cigarettes, Ever \n (any lifetime use)" = (mean(EELCIGT, na.rm = TRUE) * 100),
+    "Cigarettes, Current \n (any past-30-day use)" = (mean(CCIGT, na.rm = TRUE) * 100),
+    "E-cigarettes, Current \n (any past-30-day use)" = (mean(CELCIGT, na.rm = TRUE) * 100)
+  ) |>
+  pivot_longer(cols = -year,
+               names_to = "Category",
+               values_to = "Percentage of students") |>
+  separate(Category, into = c("Product", "User"), sep = ", ") |>
+  # Plot percent of students by current and ever use of tobacco and e-cigarettes
+  ggplot(aes(
+    x = year,
+    y = `Percentage of students`,
+    color = Product,
+    linetype = User
+  )) +
+  geom_line() +
+  geom_point(show.legend = FALSE, size = 2) +
+  # Set colors
+  scale_linetype_manual(values = c(2, 1)) +
+  scale_color_manual(values = v_colors) +
+  theme_linedraw() +
+  # Set labels
+  labs(title = "How does e-cigarette use compare to cigarette use for high school students?",
+       subtitle = "Current and ever users of e-cigarettes and cigarettes",
+       y = "% of students") +
+  # Set theme
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        text = element_text(size = 15),
+        plot.title.position = "plot")
+```
+
+```{r}
+Middle_School
+High_School
+```
+
+Middle school and high school students follow similar trends as when the data was combined. The main difference between middle school and high school students is that high school students are much more likely to currently use and have ever used e-cigarettes and tobacco. Any lifetime use for middle school students is around 15-20% for e-cigarettes and about 10% for cigarettes while for high school students it's around 30-45% for e-cigarettes and 20-30% for cigarettes. Just how the percentage is amplified from middle school to high school students, the trends are amplified, which is why high school students have a much higher range of percent of students using across the years.
+
+
+### Data Analysis
+
+Our data is not always consistent. Given the fact that our data comes from a survey. This means that the data can be unreliable. Not everyone that received a survey responded, meaning the data might not be representative of all people since it only sampled from the specific people that responded to the survey. In this case, we could have over-sampled or under-sampled from individual groups. As a result, we can recalculate our values using survey weights provided in our dataset. The dataset provides us with three variables: 'psu', 'stratum', and 'finwgt'. These variables are used to recalculate our values. We will recalculate values for tobacco and e-cigarette use.
+```{r}
+#function to tobacco usage using survey weights
+surveyMeanA <- function(currYear) {
+  options(survey.lonely.psu = "adjust")
+  currYear |>
+    #creates object to determine the survey design
+    as_survey_design(strata = stratum,
+                     ids = psu,
+                     weight  = finwgt,
+                     nest = TRUE) |>
+    #recalculates by taking into account the survey weights
+    summarize(tobacco_ever = survey_mean(tobacco_ever,
+                                         vartype = "ci",
+                                         na.rm = TRUE),
+              tobacco_current = survey_mean(tobacco_current,
+                                            vartype = "ci",
+                                            na.rm = TRUE))  |>
+    #converting them to percentages
+    mutate_all("*", 100) |>
+    #obtaining the upper and lower bounds of our outputs
+    pivot_longer(everything(),
+                 names_to = "Type",
+                 values_to = "Percentage of students") |>
+    mutate(Estimate = case_when(str_detect(Type, "_low") ~ "Lower",
+                                str_detect(Type, "_upp") ~ "Upper",
+                                TRUE ~ "Mean"),
+           User = case_when(str_detect(Type, "ever") ~ "Ever",
+                            str_detect(Type, "current") ~ "Current",
+                            TRUE ~ "Mean"))
+}
+
+#function to e-cig usage using survey weights
+surveyMeanB <- function(currYear) {
+  options(survey.lonely.psu = "adjust")
+  currYear |>
+    #creates object to determine the survey design
+    as_survey_design(strata = stratum,
+                     ids = psu,
+                     weight  = finwgt,
+                     nest = TRUE) |>
+    #recalculates by taking into account the survey weights
+    summarize(ecig_ever = survey_mean(ecig_ever,
+                                         vartype = "ci",
+                                         na.rm = TRUE),
+              ecig_current = survey_mean(ecig_current,
+                                            vartype = "ci",
+                                            na.rm = TRUE))  |>
+    #converting them to percentages
+    mutate_all("*", 100) |>
+    #obtaining the upper and lower bounds of our outputs
+    pivot_longer(everything(),
+                 names_to = "Type",
+                 values_to = "Percentage of students") |>
+    mutate(Estimate = case_when(str_detect(Type, "_low") ~ "Lower",
+                                str_detect(Type, "_upp") ~ "Upper",
+                                TRUE ~ "Mean"),
+           User = case_when(str_detect(Type, "ever") ~ "Ever",
+                            str_detect(Type, "current") ~ "Current",
+                            TRUE ~ "Mean"))
+  }
+```
+
+Using the function we created above, we recalculate the values for tobacco usage and plot them with confidence intervals on where the actual value should be around..
+```{r}
+nyts_data |>
+  group_by(year) |>
+  group_modify(~ surveyMeanA(.x)) |>
+  dplyr::select(-Type) |>
+  pivot_wider(names_from = Estimate,
+             values_from = `Percentage of students`) |>
+  ggplot(aes(x = year, y = Mean)) +
+  geom_line(aes(linetype = User)) +
+  geom_linerange(aes(ymin = Lower,
+                     ymax = Upper), 
+                     size = 1, 
+              show.legend = FALSE) +
+  scale_linetype_manual(values = c(2, 1)) +
+  scale_y_continuous(breaks = seq(0, 70, by = 10),
+                     labels = seq(0, 70, by = 10),
+                     limits = c(0, 70)) +
+    theme_linedraw() +
+    labs(title = "Tobacco use over the past years",
+         subtitle = "using survey weights and confidence intervals",
+         y = "% of students") +
+    theme(legend.position = "right",
+          axis.title.x = element_blank(),
+          text = element_text(size = 15),
+          plot.title.position = "plot")
+```
+
+We see that both lines are very similar to the plot that we provided earlier without the survey weights. The trend still remains that tobacco usage gained more traction after 2017. There might be slight variation with the values themselves if we consider the confidence intervals.
+
+Similar to above, we recalculate the values for e-cigarettes this time and plot them with their respective confidence intervals.
+```{r}
+nyts_data |>
+  group_by(year) |>
+  group_modify(~ surveyMeanB(.x)) |>
+  dplyr::select(-Type) |>
+  pivot_wider(names_from = Estimate,
+             values_from = `Percentage of students`) |>
+  ggplot(aes(x = year, y = Mean)) +
+  geom_line(aes(linetype = User)) +
+  geom_linerange(aes(ymin = Lower,
+                     ymax = Upper), 
+                     size = 1, 
+              show.legend = FALSE) +
+  scale_linetype_manual(values = c(2, 1)) +
+  scale_y_continuous(breaks = seq(0, 70, by = 10),
+                     labels = seq(0, 70, by = 10),
+                     limits = c(0, 70)) +
+    theme_linedraw() +
+    labs(title = "E-cigarette use over the past years",
+         subtitle = "using survey weights and confidence intervals",
+         y = "% of students") +
+    theme(legend.position = "right",
+          axis.title.x = element_blank(),
+          text = element_text(size = 15),
+          plot.title.position = "plot")
+```
+
+Similar to the previous graph, we see that the trend still remains even after we added the survey weights. On the other hand, we can see that the confidence interval for the current e-cigarette users are much smaller, which might indicate that the values might have an accurate representation. However, on the lifetime usage, we see that in 2015 and 2019 the confidence intervals are slightly larger than the rest. In 2019, there were the most lifetime users, ranging from 32% to 37% of students using e-cigarettes.
+
+To determine how e-cigarette use compares between males and females, we fit a logistic regression model across our entire data set, predicting the probability of males and females being current e-cigarette users during 2015-2019. Doing this, we can compare current e-cigarette use and determine what gender is more likely to use currently e-cigarettes.
+```{r}
+reg <- nyts_data |>
+  filter(!is.na(Sex)) # Filter out NA values for sex
+# Create logistic regression model
+currEcigSex <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(ecig_current) ~ Sex, data = reg, family = "binomial") # Model current e-cigarette use on gender
+currEcigSexTidy <- tidy(currEcigSex)
+# Adjust logistic regression model with survey weighting
+reg_survey_design <- reg |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+currEcigSex_svy <- survey::svyglm(ecig_current ~ Sex,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = reg_survey_design)
+tidy(currEcigSex_svy) # Print result
+```
+
+From this, we see that the log odds of a female being a current e-cigarette user in 2015-2019 on average is .202 lower than males. Thus, the odds are .817 times the odds of males, or 18.3% lower for females.
+
+We performed a similar logistic regression for any lifetime e-cigarette use.
+```{r}
+reg <- nyts_data |>
+  filter(!is.na(Sex)) # Filter out NA values for sex
+# Create logistic regression model
+everEcigSex <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(ecig_ever) ~ Sex, data = reg, family = "binomial") # Model ever e-cigarette use on gender
+everEcigSexTidy <- tidy(everEcigSex)
+# Adjust logistic regression model with survey weighting
+reg_survey_design <- reg |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+everEcigSex_svy <- survey::svyglm(ecig_ever ~ Sex,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = reg_survey_design)
+tidy(everEcigSex_svy) # Print result
+```
+We find similar results in that the log odds of a female having ever used e-cigarettes in 2015-2019 on average is .139 lower than males. Thus, the odds are .870 times the odds of males, or 13.0% lower for females.
+
+Wondering if our results change if we segment by class level, we redid both logistic regressions for current and any lifetime e-cigarette use by gender to incorporate those factors.
+```{r}
+reg <- nyts_data |>
+  filter(!is.na(Sex), level == "Middle School") # Filter out NA values for sex and select middle schoolers
+# Create logistic regression model
+currEcigSex <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(ecig_current) ~ Sex, data = reg, family = "binomial") # Model current e-cigarette use on gender
+currEcigSexTidy <- tidy(currEcigSex)
+# Adjust logistic regression model with survey weighting
+reg_survey_design <- reg |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+currEcigSex_svy <- survey::svyglm(ecig_current ~ Sex,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = reg_survey_design)
+Current_Middle_School = tidy(currEcigSex_svy)
+
+reg <- nyts_data |>
+  filter(!is.na(Sex), level == "High School") # Filter out NA values for sex and select high schoolers
+# Create logistic regression model
+currEcigSex <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(ecig_current) ~ Sex, data = reg, family = "binomial") # Model current e-cigarette use on gender
+currEcigSexTidy <- tidy(currEcigSex)
+# Adjust logistic regression model with survey weighting
+reg_survey_design <- reg |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+currEcigSex_svy <- survey::svyglm(ecig_current ~ Sex,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = reg_survey_design)
+Current_High_School = tidy(currEcigSex_svy)
+```
+
+```{r}
+Current_Middle_School
+Current_High_School
+```
+We see that the log odds of a middle school female being a current e-cigarette user in 2015-2019 on average is .120 lower than males. Thus, the odds are .887 times the odds of males, or 11.3%, lower for females. For a high school female, the log odds are on average .240 lower. Thus the odds are .787 times the odds of males, or 21.3%, lower for females. We can observe that females in middle school are less likely to be current e-cigarette users than males but that margin is lower than it is for high school females and males.
+
+We repeated this analysis for any lifetime usage of e-cigarettes among high school students by gender.
+```{r}
+reg <- nyts_data |>
+  filter(!is.na(Sex), level == "Middle School") # Filter out NA values for sex and select middle schoolers
+# Create logistic regression model
+everEcigSex <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(ecig_ever) ~ Sex, data = reg, family = "binomial") # Model ever e-cigarette use on gender
+everEcigSexTidy <- tidy(everEcigSex)
+# Adjust logistic regression model with survey weighting
+reg_survey_design <- reg |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+everEcigSex_svy <- survey::svyglm(ecig_ever ~ Sex,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = reg_survey_design)
+Ever_Middle_School = tidy(everEcigSex_svy) # Print result
+
+reg <- nyts_data |>
+  filter(!is.na(Sex), level == "High School") # Filter out NA values for sex and select high schoolers
+# Create logistic regression model
+everEcigSex <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(ecig_ever) ~ Sex, data = reg, family = "binomial") # Model ever e-cigarette use on gender
+everEcigSexTidy <- tidy(everEcigSex)
+# Adjust logistic regression model with survey weighting
+reg_survey_design <- reg |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+everEcigSex_svy <- survey::svyglm(ecig_ever ~ Sex,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = reg_survey_design)
+Ever_High_School = tidy(everEcigSex_svy) # Print result
+```
+
+```{r}
+Ever_Middle_School
+Ever_High_School
+```
+From these regressions, we see that the log odds of a high school female having ever used e-cigarettes in 2015-2019 on average is .152 lower than males. Thus, the odds are .859 times the odds of males, or 14.1%, lower for females. For a high school female, the log odds are on average .153 lower. Thus the odds are .858 times the odds of males, or 14.2%, higher for females. We, again, can observe that females in middle school are less likely to be current e-cigarette users than males but, this time, the odds are similar for high school females.
+
+To determine whether there is a relationship between e-cigarette use and tobacco use, we first created a logistic regression model predicting current tobacco use given current e-cigarette use.
+```{r}
+currTobaEcig <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(tobacco_current) ~ as.factor(ecig_current), data = nyts_data, family = "binomial") # Model current tobacco use on current e-cig use
+currTobaEcigTidy <- tidy(currTobaEcig)
+# Adjust logistic regression model with survey weighting
+currTobaEcig_survey_design <- nyts_data |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+currTobaEcig_svy <- survey::svyglm(tobacco_current ~ ecig_current,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = currTobaEcig_survey_design)
+tidy(currTobaEcig_svy) # Print result
+```
+From this, we see that the log odds of a student being a current tobacco user in 2015-2019 on average is 21.3 higher if they current use e-cigarettes, meaning the odds of currently using tobacco is much higher if a student currently e-cigarettes.
+
+We created a similar logistic regression model predicting any lifetime tobacco use given any lifetime e-cigarette use.
+```{r}
+everTobaEcig <- logistic_reg() |>
+  set_engine("glm") |>
+  fit(as.factor(tobacco_ever) ~ as.factor(ecig_ever), data = nyts_data, family = "binomial") # Model current tobacco use on current e-cig use
+everTobaEcigTidy <- tidy(everTobaEcig)
+# Adjust logistic regression model with survey weighting
+everTobaEcig_survey_design <- nyts_data |>
+                          as_survey_design(strata = stratum,
+                                            ids = psu,
+                                            weight  = finwgt,
+                                            nest = TRUE)
+everTobaEcig_svy <- survey::svyglm(tobacco_ever ~ ecig_ever,
+                                  family = quasibinomial(link = 'logit'),
+                                  design = currTobaEcig_survey_design)
+tidy(everTobaEcig_svy) # Print result
+```
+We see that the log odds of a student having ever used tobacco in 2015-2019 on average is 21.60 higher if they current use e-cigarettes, again meaning the odds of currently using tobacco is much higher if a student currently e-cigarettes.
+
+## Conclusion
+
+Through this case study, we found that tobacco use has remained relatively steady across 2015-2019 while e-cigarete use increased in 2018 and 2019 after having slight decline since 2015. Through our exploratory data analysis, we can see that current and any lifetime tobacco and e-cigarette use is lower for females than males overall and when segmenting my class level. We are able to confirm these observations through our logistic regression models where females were always less likely to use e-cigarettes and tobacco than males in middle school and high school both currently and ever. In our data set, we were also able to observe that the majority of e-cigarettes used by students were of the brand JUUL with no other brand coming remotely close in usage. In our exploratory data analysis, we are able to see that both tobacco and e-cigarette use was declining up until 2018 where e-cigarettes use began to increase into 2019. Through the logistic regressions we created, we were able to see that students that currently or have ever used e-cigarettes were much more likely to currently or have ever used tobacco, respectively. Since the data we use comes from a survey, there are limitations in that this sample may not be completely representative of the entire population. Furthermore, with the nature of this survey, it is hard to guarantee that students answered truthfully, meaning our data could be a bit inaccurate. For further analysis, we could drill down to determine the best predictors of current and any lifetime e-cigarette and tobacco usage to help identify students that are most likely to use e-cigarettes and tobacco.
