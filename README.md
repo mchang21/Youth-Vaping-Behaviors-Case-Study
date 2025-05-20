@@ -21,3 +21,7 @@ Analyze trends in tobacco and e-cigarette usage among U.S. middle and high schoo
 ## Data Set
 
 The data we will be using for this case study comes from the National Youth Tobacco Survey (NYTS). The data is an annual survey which asks middle school and high school (grades 6-12) about their tobacco usage in the United States. The data we will be using is from 2015 to 2019.
+
+## Final
+
+Click [here](https://htmlpreview.github.io/?https://github.com/mchang21/Youth-Vaping-Behaviors-Case-Study/blob/main/cs03.html) to view the case study.
